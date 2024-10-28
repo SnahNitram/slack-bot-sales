@@ -223,14 +223,50 @@ const extractCleanResponse = (flowiseResponse) => {
   }
 };
 
-// Handle direct messages and mentions
+// Handle mentions in channels
+app.event('app_mention', async ({ event, say }) => {
+  try {
+    // Clean the message text (remove bot mention if present)
+    const messageText = event.text.replace(`<@${app.client.botUserId}>`, '').trim();
+
+    // Call Flowise API
+    const response = await axios.post(
+      FLOWISE_API_ENDPOINT,
+      {
+        question: messageText
+      },
+      {
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${FLOWISE_API_KEY}`
+        }
+      }
+    );
+
+    const cleanResponse = extractCleanResponse(response.data);
+    const blocks = createSlackBlocks(cleanResponse);
+
+    await say({
+      blocks: blocks,
+      text: cleanResponse, // Fallback text
+      thread_ts: event.thread_ts || event.ts
+    });
+
+  } catch (error) {
+    console.error('Error:', error);
+    await say({
+      text: "I'm sorry, I encountered an error processing your request.",
+      thread_ts: event.thread_ts || event.ts
+    });
+  }
+});
+
+// Handle direct messages
 app.event('message', async ({ event, say }) => {
-  if (
-    (event.channel_type === 'im' || event.text.includes(`<@${app.client.botUserId}>`)) &&
-    !event.bot_id
-  ) {
+  // Only respond to direct messages, not channel messages
+  if (event.channel_type === 'im' && !event.bot_id) {
     try {
-      const messageText = event.text.replace(`<@${app.client.botUserId}>`, '').trim();
+      const messageText = event.text.trim();
 
       const response = await axios.post(
         FLOWISE_API_ENDPOINT,
@@ -250,7 +286,7 @@ app.event('message', async ({ event, say }) => {
 
       await say({
         blocks: blocks,
-        text: cleanResponse, // Fallback text
+        text: cleanResponse,
         thread_ts: event.thread_ts || event.ts
       });
 
