@@ -228,12 +228,18 @@ app.event('app_mention', async ({ event, say }) => {
   try {
     // Clean the message text (remove bot mention if present)
     const messageText = event.text.replace(`<@${app.client.botUserId}>`, '').trim();
+    
+    // Use thread_ts if it exists (meaning it's in a thread), otherwise use the message ts as the conversation ID
+    const conversationId = event.thread_ts || event.ts;
 
-    // Call Flowise API
+    // Call Flowise API with conversation context
     const response = await axios.post(
       FLOWISE_API_ENDPOINT,
       {
-        question: messageText
+        question: messageText,
+        overrideConfig: {
+          sessionId: `slack_${event.channel}_${conversationId}` // Create a unique session ID
+        }
       },
       {
         headers: {
@@ -248,8 +254,8 @@ app.event('app_mention', async ({ event, say }) => {
 
     await say({
       blocks: blocks,
-      text: cleanResponse, // Fallback text
-      thread_ts: event.thread_ts || event.ts
+      text: cleanResponse,
+      thread_ts: event.thread_ts || event.ts // This ensures replies stay in the same thread
     });
 
   } catch (error) {
@@ -266,12 +272,16 @@ app.event('message', async ({ event, say }) => {
   // Only respond to direct messages, not channel messages
   if (event.channel_type === 'im' && !event.bot_id) {
     try {
-      const messageText = event.text.trim();
+      // Use thread_ts if it exists, otherwise use the message ts as the conversation ID
+      const conversationId = event.thread_ts || event.ts;
 
       const response = await axios.post(
         FLOWISE_API_ENDPOINT,
         {
-          question: messageText
+          question: event.text.trim(),
+          overrideConfig: {
+            sessionId: `slack_dm_${event.channel}_${conversationId}` // Create a unique session ID for DMs
+          }
         },
         {
           headers: {
