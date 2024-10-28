@@ -201,38 +201,17 @@ const createSlackBlocks = (text) => {
 // Function to extract clean text from Flowise response
 const extractCleanResponse = (flowiseResponse) => {
   try {
-    // Log the raw response for debugging
-    console.log('Raw response type:', typeof flowiseResponse);
+    console.log('Processing response:', typeof flowiseResponse, flowiseResponse);
     
-    // If response is already an object, use it directly
-    const responseData = (typeof flowiseResponse === 'object') 
-      ? flowiseResponse 
-      : JSON.parse(flowiseResponse);
-
-    console.log('Parsed response data:', responseData);
-
-    // First try to get text directly
-    if (responseData.text) {
-      return convertMarkdownToSlack(responseData.text);
+    // If response has a text field, use it directly
+    if (flowiseResponse && flowiseResponse.text) {
+      return convertMarkdownToSlack(flowiseResponse.text);
     }
 
-    // If not found, try to get from assistant messages
-    if (responseData.assistant?.messages) {
-      const lastMessage = responseData.assistant.messages.find(msg => msg.role === 'assistant');
-      if (lastMessage?.content?.[0]?.text?.value) {
-        return convertMarkdownToSlack(lastMessage.content[0].text.value);
-      }
-    }
-
-    // If all else fails, return the entire response as string
     return 'Sorry, I couldn\'t process the response properly.';
   } catch (error) {
-    console.error('Error parsing Flowise response:', error);
-    if (typeof flowiseResponse === 'object') {
-      console.error('Response object:', JSON.stringify(flowiseResponse, null, 2));
-    } else if (typeof flowiseResponse === 'string') {
-      console.error('First 200 characters of response:', flowiseResponse.substring(0, 200));
-    }
+    console.error('Error processing Flowise response:', error);
+    console.error('Response was:', flowiseResponse);
     return 'Sorry, I had trouble processing the response.';
   }
 };
@@ -240,38 +219,45 @@ const extractCleanResponse = (flowiseResponse) => {
 // Handle mentions in channels
 app.event('app_mention', async ({ event, say }) => {
   try {
+    console.log('Received channel mention:', event);
+    
     // Clean the message text (remove bot mention if present)
     const messageText = event.text.replace(`<@${app.client.botUserId}>`, '').trim();
     
     // Use thread_ts if it exists (meaning it's in a thread), otherwise use the message ts as the conversation ID
     const conversationId = event.thread_ts || event.ts;
     
-    // Log the session ID for debugging
+    // Log the session ID and request details
     const sessionId = `slack_${event.channel}_${conversationId}`;
-    console.log('Channel mention - Making request to:', FLOWISE_API_ENDPOINT);
-    console.log('With sessionId:', sessionId);
+    console.log('Making Flowise API request:', {
+      endpoint: FLOWISE_API_ENDPOINT,
+      sessionId: sessionId,
+      messageText: messageText
+    });
 
-    // Call Flowise API with conversation context
-    const response = await axios.post(
-      FLOWISE_API_ENDPOINT,
-      {
+    // Make API request to Flowise
+    const response = await axios({
+      method: 'post',
+      url: FLOWISE_API_ENDPOINT,
+      data: {
         question: messageText,
         overrideConfig: {
           sessionId: sessionId
         }
       },
-      {
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${process.env.FLOWISE_API_KEY}`
-        },
-        responseType: 'json'
-      }
-    );
+      headers: {
+        'Content-Type': 'application/json',
+        'Accept': 'application/json',
+        'Authorization': `Bearer ${process.env.FLOWISE_API_KEY}`
+      },
+      validateStatus: (status) => status === 200
+    });
 
-    console.log('Response status:', response.status);
-    console.log('Response headers:', response.headers);
-    console.log('Response data type:', typeof response.data);
+    console.log('Received response from Flowise:', {
+      status: response.status,
+      dataType: typeof response.data,
+      hasText: response.data && response.data.text ? 'yes' : 'no'
+    });
 
     const cleanResponse = extractCleanResponse(response.data);
     const blocks = createSlackBlocks(cleanResponse);
@@ -283,14 +269,16 @@ app.event('app_mention', async ({ event, say }) => {
     });
 
   } catch (error) {
-    console.error('Full error details:', error);
+    console.error('Error handling channel mention:', error);
     if (error.response) {
-      console.error('Error response status:', error.response.status);
-      console.error('Error response headers:', error.response.headers);
-      console.error('Error response data:', error.response.data);
+      console.error('API error details:', {
+        status: error.response.status,
+        statusText: error.response.statusText,
+        data: error.response.data
+      });
     }
     await say({
-      text: "I'm sorry, I encountered an error processing your request.",
+      text: "I'm sorry, I encountered an error processing your request. Please try again later.",
       thread_ts: event.thread_ts || event.ts
     });
   }
@@ -301,34 +289,42 @@ app.event('message', async ({ event, say }) => {
   // Only respond to direct messages, not channel messages
   if (event.channel_type === 'im' && !event.bot_id) {
     try {
+      console.log('Received direct message:', event);
+      
       // Use thread_ts if it exists, otherwise use the message ts as the conversation ID
       const conversationId = event.thread_ts || event.ts;
       
-      // Log the session ID for debugging
+      // Log the session ID and request details
       const sessionId = `slack_dm_${event.channel}_${conversationId}`;
-      console.log('Direct message - Making request to:', FLOWISE_API_ENDPOINT);
-      console.log('With sessionId:', sessionId);
+      console.log('Making Flowise API request:', {
+        endpoint: FLOWISE_API_ENDPOINT,
+        sessionId: sessionId,
+        messageText: event.text.trim()
+      });
 
-      const response = await axios.post(
-        FLOWISE_API_ENDPOINT,
-        {
+      // Make API request to Flowise
+      const response = await axios({
+        method: 'post',
+        url: FLOWISE_API_ENDPOINT,
+        data: {
           question: event.text.trim(),
           overrideConfig: {
             sessionId: sessionId
           }
         },
-        {
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${process.env.FLOWISE_API_KEY}`
-          },
-          responseType: 'json'
-        }
-      );
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json',
+          'Authorization': `Bearer ${process.env.FLOWISE_API_KEY}`
+        },
+        validateStatus: (status) => status === 200
+      });
 
-      console.log('Response status:', response.status);
-      console.log('Response headers:', response.headers);
-      console.log('Response data type:', typeof response.data);
+      console.log('Received response from Flowise:', {
+        status: response.status,
+        dataType: typeof response.data,
+        hasText: response.data && response.data.text ? 'yes' : 'no'
+      });
 
       const cleanResponse = extractCleanResponse(response.data);
       const blocks = createSlackBlocks(cleanResponse);
@@ -340,14 +336,16 @@ app.event('message', async ({ event, say }) => {
       });
 
     } catch (error) {
-      console.error('Full error details:', error);
+      console.error('Error handling direct message:', error);
       if (error.response) {
-        console.error('Error response status:', error.response.status);
-        console.error('Error response headers:', error.response.headers);
-        console.error('Error response data:', error.response.data);
+        console.error('API error details:', {
+          status: error.response.status,
+          statusText: error.response.statusText,
+          data: error.response.data
+        });
       }
       await say({
-        text: "I'm sorry, I encountered an error processing your request.",
+        text: "I'm sorry, I encountered an error processing your request. Please try again later.",
         thread_ts: event.thread_ts || event.ts
       });
     }
