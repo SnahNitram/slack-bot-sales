@@ -1,0 +1,26 @@
+{
+    "name": "slack-bot",
+    "version": "1.0.0",
+    "description": "This is a generic slackbot to connect to Flowise",
+    "main": "app.js",
+    "scripts": {
+      "start": "node app.js",
+      "test": "echo \"Error: no test specified\" && exit 1"
+    },
+    "keywords": [
+      "slack",
+      "bot",
+      "flowise"
+    ],
+    "author": "Oschlo AS",
+    "license": "ISC",
+    "dependencies": {
+      "@slack/bolt": "^4.0.1",
+      "axios": "^1.7.7",
+      "dotenv": "^16.4.5",
+      "marked": "^14.1.3"
+    },
+    "engines": {
+      "node": ">=16.0.0"
+    }
+  }
