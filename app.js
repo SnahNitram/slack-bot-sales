@@ -15,7 +15,11 @@ const app = new App({
 });
 
 // Configure Flowise API details with chatflow ID
-const FLOWISE_API_ENDPOINT = `${process.env.FLOWISE_API_ENDPOINT}/api/v1/prediction/${process.env.FLOWISE_CHATFLOW_ID}`;
+const FLOWISE_BASE_URL = process.env.FLOWISE_API_ENDPOINT.replace(/\/$/, ''); // Remove trailing slash if present
+const FLOWISE_API_ENDPOINT = `${FLOWISE_BASE_URL}/api/v1/prediction/${process.env.FLOWISE_CHATFLOW_ID}`;
+
+// Log the configured endpoint
+console.log('Configured Flowise API endpoint:', FLOWISE_API_ENDPOINT);
 
 // Language mapping for code blocks
 const languageMap = {
@@ -197,9 +201,15 @@ const createSlackBlocks = (text) => {
 // Function to extract clean text from Flowise response
 const extractCleanResponse = (flowiseResponse) => {
   try {
-    const responseData = typeof flowiseResponse === 'string' 
-      ? JSON.parse(flowiseResponse) 
-      : flowiseResponse;
+    // Log the raw response for debugging
+    console.log('Raw response type:', typeof flowiseResponse);
+    
+    // If response is already an object, use it directly
+    const responseData = (typeof flowiseResponse === 'object') 
+      ? flowiseResponse 
+      : JSON.parse(flowiseResponse);
+
+    console.log('Parsed response data:', responseData);
 
     // First try to get text directly
     if (responseData.text) {
@@ -218,6 +228,11 @@ const extractCleanResponse = (flowiseResponse) => {
     return 'Sorry, I couldn\'t process the response properly.';
   } catch (error) {
     console.error('Error parsing Flowise response:', error);
+    if (typeof flowiseResponse === 'object') {
+      console.error('Response object:', JSON.stringify(flowiseResponse, null, 2));
+    } else if (typeof flowiseResponse === 'string') {
+      console.error('First 200 characters of response:', flowiseResponse.substring(0, 200));
+    }
     return 'Sorry, I had trouble processing the response.';
   }
 };
@@ -233,7 +248,8 @@ app.event('app_mention', async ({ event, say }) => {
     
     // Log the session ID for debugging
     const sessionId = `slack_${event.channel}_${conversationId}`;
-    console.log('Channel mention - Sending request with sessionId:', sessionId);
+    console.log('Channel mention - Making request to:', FLOWISE_API_ENDPOINT);
+    console.log('With sessionId:', sessionId);
 
     // Call Flowise API with conversation context
     const response = await axios.post(
@@ -248,9 +264,14 @@ app.event('app_mention', async ({ event, say }) => {
         headers: {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${process.env.FLOWISE_API_KEY}`
-        }
+        },
+        responseType: 'json'
       }
     );
+
+    console.log('Response status:', response.status);
+    console.log('Response headers:', response.headers);
+    console.log('Response data type:', typeof response.data);
 
     const cleanResponse = extractCleanResponse(response.data);
     const blocks = createSlackBlocks(cleanResponse);
@@ -258,11 +279,16 @@ app.event('app_mention', async ({ event, say }) => {
     await say({
       blocks: blocks,
       text: cleanResponse,
-      thread_ts: event.thread_ts || event.ts // This ensures replies stay in the same thread
+      thread_ts: event.thread_ts || event.ts
     });
 
   } catch (error) {
-    console.error('Error:', error);
+    console.error('Full error details:', error);
+    if (error.response) {
+      console.error('Error response status:', error.response.status);
+      console.error('Error response headers:', error.response.headers);
+      console.error('Error response data:', error.response.data);
+    }
     await say({
       text: "I'm sorry, I encountered an error processing your request.",
       thread_ts: event.thread_ts || event.ts
@@ -280,7 +306,8 @@ app.event('message', async ({ event, say }) => {
       
       // Log the session ID for debugging
       const sessionId = `slack_dm_${event.channel}_${conversationId}`;
-      console.log('Direct message - Sending request with sessionId:', sessionId);
+      console.log('Direct message - Making request to:', FLOWISE_API_ENDPOINT);
+      console.log('With sessionId:', sessionId);
 
       const response = await axios.post(
         FLOWISE_API_ENDPOINT,
@@ -294,9 +321,14 @@ app.event('message', async ({ event, say }) => {
           headers: {
             'Content-Type': 'application/json',
             'Authorization': `Bearer ${process.env.FLOWISE_API_KEY}`
-          }
+          },
+          responseType: 'json'
         }
       );
+
+      console.log('Response status:', response.status);
+      console.log('Response headers:', response.headers);
+      console.log('Response data type:', typeof response.data);
 
       const cleanResponse = extractCleanResponse(response.data);
       const blocks = createSlackBlocks(cleanResponse);
@@ -308,7 +340,12 @@ app.event('message', async ({ event, say }) => {
       });
 
     } catch (error) {
-      console.error('Error:', error);
+      console.error('Full error details:', error);
+      if (error.response) {
+        console.error('Error response status:', error.response.status);
+        console.error('Error response headers:', error.response.headers);
+        console.error('Error response data:', error.response.data);
+      }
       await say({
         text: "I'm sorry, I encountered an error processing your request.",
         thread_ts: event.thread_ts || event.ts
