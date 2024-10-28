@@ -14,9 +14,8 @@ const app = new App({
   appToken: process.env.SLACK_APP_TOKEN
 });
 
-// Configure Flowise API details
-const FLOWISE_API_ENDPOINT = process.env.FLOWISE_API_ENDPOINT;
-const FLOWISE_API_KEY = process.env.FLOWISE_API_KEY;
+// Configure Flowise API details with chatflow ID
+const FLOWISE_API_ENDPOINT = `${process.env.FLOWISE_API_ENDPOINT}/api/v1/prediction/${process.env.FLOWISE_CHATFLOW_ID}`;
 
 // Language mapping for code blocks
 const languageMap = {
@@ -231,6 +230,10 @@ app.event('app_mention', async ({ event, say }) => {
     
     // Use thread_ts if it exists (meaning it's in a thread), otherwise use the message ts as the conversation ID
     const conversationId = event.thread_ts || event.ts;
+    
+    // Log the session ID for debugging
+    const sessionId = `slack_${event.channel}_${conversationId}`;
+    console.log('Channel mention - Sending request with sessionId:', sessionId);
 
     // Call Flowise API with conversation context
     const response = await axios.post(
@@ -238,13 +241,13 @@ app.event('app_mention', async ({ event, say }) => {
       {
         question: messageText,
         overrideConfig: {
-          sessionId: `slack_${event.channel}_${conversationId}` // Create a unique session ID
+          sessionId: sessionId
         }
       },
       {
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${FLOWISE_API_KEY}`
+          'Authorization': `Bearer ${process.env.FLOWISE_API_KEY}`
         }
       }
     );
@@ -274,19 +277,23 @@ app.event('message', async ({ event, say }) => {
     try {
       // Use thread_ts if it exists, otherwise use the message ts as the conversation ID
       const conversationId = event.thread_ts || event.ts;
+      
+      // Log the session ID for debugging
+      const sessionId = `slack_dm_${event.channel}_${conversationId}`;
+      console.log('Direct message - Sending request with sessionId:', sessionId);
 
       const response = await axios.post(
         FLOWISE_API_ENDPOINT,
         {
           question: event.text.trim(),
           overrideConfig: {
-            sessionId: `slack_dm_${event.channel}_${conversationId}` // Create a unique session ID for DMs
+            sessionId: sessionId
           }
         },
         {
           headers: {
             'Content-Type': 'application/json',
-            'Authorization': `Bearer ${FLOWISE_API_KEY}`
+            'Authorization': `Bearer ${process.env.FLOWISE_API_KEY}`
           }
         }
       );
@@ -320,6 +327,7 @@ app.error(async (error) => {
   try {
     await app.start();
     console.log('⚡️ Slack Bolt app is running!');
+    console.log('Using Flowise API endpoint:', FLOWISE_API_ENDPOINT);
   } catch (error) {
     console.error('Unable to start App:', error);
   }
