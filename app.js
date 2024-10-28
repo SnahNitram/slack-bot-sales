@@ -21,23 +21,16 @@ const server = createServer((req, res) => {
   res.end('Health check OK');
 });
 
-// Structured logging helper
+// Simple logging helper
 const log = {
-  info: (message, data = {}) => {
-    console.log(JSON.stringify({ level: 'info', message, ...data, timestamp: new Date().toISOString() }));
+  info: (message) => {
+    console.log(`[INFO] ${message}`);
   },
-  error: (message, error = {}, data = {}) => {
-    console.error(JSON.stringify({
-      level: 'error',
-      message,
-      error: error.message || error,
-      stack: error.stack,
-      ...data,
-      timestamp: new Date().toISOString()
-    }));
+  error: (message, error) => {
+    console.error(`[ERROR] ${message}`, error);
   },
-  debug: (message, data = {}) => {
-    console.log(JSON.stringify({ level: 'debug', message, ...data, timestamp: new Date().toISOString() }));
+  debug: (message) => {
+    console.log(`[DEBUG] ${message}`);
   }
 };
 
@@ -64,17 +57,189 @@ process.on('SIGINT', async () => {
 const FLOWISE_BASE_URL = process.env.FLOWISE_API_ENDPOINT.replace(/\/$/, '');
 const FLOWISE_API_ENDPOINT = `${FLOWISE_BASE_URL}/api/v1/prediction/${process.env.FLOWISE_CHATFLOW_ID}`;
 
-log.info('Configured Flowise API endpoint', { endpoint: FLOWISE_API_ENDPOINT });
+log.info(`Configured Flowise API endpoint: ${FLOWISE_API_ENDPOINT}`);
 
-[... Keep all the existing helper functions (languageMap, emojiMap, convertTable, convertMarkdownToSlack, createSlackBlocks) unchanged ...]
+// Language mapping for code blocks
+const languageMap = {
+  'python': 'Python',
+  'javascript': 'JavaScript',
+  'js': 'JavaScript',
+  'typescript': 'TypeScript',
+  'ts': 'TypeScript',
+  'java': 'Java',
+  'cpp': 'C++',
+  'c++': 'C++',
+  'csharp': 'C#',
+  'c#': 'C#',
+  'ruby': 'Ruby',
+  'php': 'PHP',
+  'go': 'Go',
+  'rust': 'Rust',
+  'swift': 'Swift',
+  'kotlin': 'Kotlin',
+  'sql': 'SQL',
+  'html': 'HTML',
+  'css': 'CSS',
+  'shell': 'Shell',
+  'bash': 'Bash',
+  'json': 'JSON',
+  'xml': 'XML',
+  'yaml': 'YAML',
+  'markdown': 'Markdown',
+  'md': 'Markdown'
+};
+
+// Emoji mapping for common markdown emoji codes
+const emojiMap = {
+  ':smile:': ':smile:',
+  ':thumbsup:': ':+1:',
+  ':check:': ':white_check_mark:',
+  ':warning:': ':warning:',
+  ':info:': ':information_source:',
+  ':star:': ':star:',
+  ':question:': ':question:',
+  ':x:': ':x:',
+  ':heavy_check_mark:': ':white_check_mark:',
+  ':clipboard:': ':clipboard:'
+};
+
+// Function to convert markdown tables to Slack format
+const convertTable = (tableText) => {
+  const rows = tableText.trim().split('\n');
+  let slackTable = '';
+  
+  rows.forEach((row, index) => {
+    const cells = row.split('|')
+      .filter(cell => cell.trim() !== '')
+      .map(cell => cell.trim());
+    
+    // Skip markdown separator row
+    if (index === 1 && row.includes('|-')) {
+      return;
+    }
+    
+    // Format header row
+    if (index === 0) {
+      slackTable += cells.map(cell => `*${cell}*`).join(' | ') + '\n';
+      return;
+    }
+    
+    // Format regular rows
+    slackTable += cells.join(' | ') + '\n';
+  });
+  
+  return '```' + slackTable + '```';
+};
+
+// Function to convert markdown to Slack's mrkdwn format
+const convertMarkdownToSlack = (text) => {
+  // Handle tables first
+  text = text.replace(/(\|[^\n]+\|\n)((?:\|[-:\|\s]+\|\n))(\|[^\n]+\|\n)+/g, (match) => {
+    return convertTable(match);
+  });
+  
+  // Replace markdown code blocks with Slack code blocks
+  text = text.replace(/```(\w+)?\n([\s\S]*?)```/g, (match, lang, code) => {
+    const language = lang ? languageMap[lang.toLowerCase()] || lang : '';
+    return `\`\`\`${language}\n${code}\`\`\``;
+  });
+  
+  // Replace markdown inline code with Slack code
+  text = text.replace(/`([^`]+)`/g, '`$1`');
+  
+  // Convert headers with different levels
+  text = text.replace(/^(#{1,6})\s+(.+)$/gm, (match, hashes, content) => {
+    const level = hashes.length;
+    const prefix = '*'.repeat(Math.min(level, 3));
+    return `${prefix}${content}${prefix}\n`;
+  });
+  
+  // Convert bold
+  text = text.replace(/\*\*(.+?)\*\*/g, '*$1*');
+  
+  // Convert italic
+  text = text.replace(/_(.+?)_/g, '_$1_');
+  text = text.replace(/\*([^*]+)\*/g, '_$1_');
+  
+  // Convert bullet points with multiple levels
+  text = text.replace(/^(\s*)-\s+(.+)$/gm, (match, spaces, content) => {
+    const level = Math.floor(spaces.length / 2);
+    return `${'  '.repeat(level)}• ${content}`;
+  });
+  
+  // Convert numbered lists with multiple levels
+  text = text.replace(/^(\s*)\d+\.\s+(.+)$/gm, (match, spaces, content) => {
+    const level = Math.floor(spaces.length / 2);
+    return `${'  '.repeat(level)}• ${content}`;
+  });
+  
+  // Convert block quotes
+  text = text.replace(/^>\s+(.+)$/gm, '>>> $1');
+  text = text.replace(/^>\s*$/gm, '');
+  
+  // Convert links
+  text = text.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<$2|$1>');
+  
+  // Convert emoji codes
+  Object.entries(emojiMap).forEach(([markdown, slack]) => {
+    text = text.replace(new RegExp(markdown, 'g'), slack);
+  });
+  
+  return text;
+};
+
+// Function to create Slack blocks for complex formatting
+const createSlackBlocks = (text) => {
+  const blocks = [];
+  const sections = text.split('\n\n');
+  
+  sections.forEach(section => {
+    if (section.startsWith('```')) {
+      // Code block
+      blocks.push({
+        type: 'section',
+        text: {
+          type: 'mrkdwn',
+          text: section
+        }
+      });
+    } else if (section.startsWith('>>>')) {
+      // Block quote
+      blocks.push({
+        type: 'section',
+        text: {
+          type: 'mrkdwn',
+          text: section
+        }
+      });
+    } else if (section.trim().startsWith('|') && section.includes('\n')) {
+      // Table
+      blocks.push({
+        type: 'section',
+        text: {
+          type: 'mrkdwn',
+          text: section
+        }
+      });
+    } else {
+      // Regular text
+      blocks.push({
+        type: 'section',
+        text: {
+          type: 'mrkdwn',
+          text: section
+        }
+      });
+    }
+  });
+  
+  return blocks;
+};
 
 // Function to extract clean text from Flowise response
 const extractCleanResponse = (flowiseResponse) => {
   try {
-    log.debug('Processing Flowise response', {
-      responseType: typeof flowiseResponse,
-      hasText: flowiseResponse?.text ? 'yes' : 'no'
-    });
+    log.debug(`Processing response type: ${typeof flowiseResponse}`);
     
     if (flowiseResponse && flowiseResponse.text) {
       return convertMarkdownToSlack(flowiseResponse.text);
@@ -82,7 +247,7 @@ const extractCleanResponse = (flowiseResponse) => {
 
     return 'Sorry, I couldn\'t process the response properly.';
   } catch (error) {
-    log.error('Error processing Flowise response', error, { rawResponse: flowiseResponse });
+    log.error('Error processing Flowise response:', error);
     return 'Sorry, I had trouble processing the response.';
   }
 };
@@ -95,15 +260,8 @@ const shouldProcessMessage = (event) => {
   const isInThread = !!event.thread_ts;
   const isBot = !!event.bot_id;
 
-  // Don't process bot messages
   if (isBot) return false;
-
-  // Process all DM messages
   if (isDM) return true;
-
-  // In channels, process if:
-  // 1. Message mentions the bot, or
-  // 2. Message is in a thread and parent message mentioned the bot
   if (isChannel && (hasBotMention || isInThread)) return true;
 
   return false;
@@ -112,28 +270,14 @@ const shouldProcessMessage = (event) => {
 // Handle all messages (both channel messages and DMs)
 app.event('message', async ({ event, say }) => {
   try {
-    log.debug('Received message event', {
-      channelType: event.channel_type,
-      hasThreadTs: !!event.thread_ts,
-      hasBotMention: event.text?.includes(`<@${app.client.botUserId}>`),
-      isBot: !!event.bot_id,
-      channel: event.channel,
-      threadTs: event.thread_ts
-    });
+    log.debug(`Received message in ${event.channel_type} - thread: ${!!event.thread_ts}, mention: ${event.text?.includes(`<@${app.client.botUserId}>`)}`);
 
     if (!shouldProcessMessage(event)) {
-      log.debug('Skipping message - does not meet processing criteria', {
-        channelType: event.channel_type,
-        hasThreadTs: !!event.thread_ts
-      });
+      log.debug('Skipping message - does not meet processing criteria');
       return;
     }
 
-    log.info('Processing message', {
-      channelType: event.channel_type,
-      channel: event.channel,
-      threadTs: event.thread_ts
-    });
+    log.info(`Processing message in ${event.channel_type}`);
 
     // Clean the message text (remove bot mention if present)
     const messageText = event.text?.replace(`<@${app.client.botUserId}>`, '').trim() || '';
@@ -146,10 +290,7 @@ app.event('message', async ({ event, say }) => {
       ? `slack_dm_${event.channel}_${conversationId}`
       : `slack_${event.channel}_${conversationId}`;
 
-    log.debug('Making Flowise API request', {
-      sessionId,
-      messageLength: messageText.length
-    });
+    log.debug(`Making API request with session ID: ${sessionId}`);
 
     // Make API request to Flowise
     const response = await axios({
@@ -169,11 +310,7 @@ app.event('message', async ({ event, say }) => {
       validateStatus: (status) => status === 200
     });
 
-    log.debug('Received Flowise response', {
-      status: response.status,
-      dataType: typeof response.data,
-      hasText: response.data && response.data.text ? 'yes' : 'no'
-    });
+    log.debug(`Received API response with status: ${response.status}`);
 
     const cleanResponse = extractCleanResponse(response.data);
     const blocks = createSlackBlocks(cleanResponse);
@@ -184,25 +321,10 @@ app.event('message', async ({ event, say }) => {
       thread_ts: event.thread_ts || event.ts
     });
 
-    log.info('Successfully sent response', {
-      channel: event.channel,
-      threadTs: event.thread_ts || event.ts
-    });
+    log.info('Successfully sent response');
 
   } catch (error) {
-    log.error('Error handling message', error, {
-      channel: event.channel,
-      threadTs: event.thread_ts
-    });
-
-    if (error.response) {
-      log.error('API error details', null, {
-        status: error.response.status,
-        statusText: error.response.statusText,
-        data: error.response.data
-      });
-    }
-
+    log.error('Error handling message:', error);
     await say({
       text: "I'm sorry, I encountered an error processing your request. Please try again later.",
       thread_ts: event.thread_ts || event.ts
@@ -212,7 +334,7 @@ app.event('message', async ({ event, say }) => {
 
 // Error handler
 app.error(async (error) => {
-  log.error('App error', error);
+  log.error('App error:', error);
 });
 
 // Start the app
@@ -221,12 +343,9 @@ app.error(async (error) => {
     // Start both the Slack app and HTTP server
     await app.start();
     server.listen(process.env.PORT || 3000);
-    log.info('Slack bot started', {
-      port: process.env.PORT || 3000,
-      endpoint: FLOWISE_API_ENDPOINT
-    });
+    log.info('⚡️ Slack Bolt app and health check server are running!');
   } catch (error) {
-    log.error('Unable to start App', error);
+    log.error('Unable to start App:', error);
     process.exit(1);
   }
 })();
