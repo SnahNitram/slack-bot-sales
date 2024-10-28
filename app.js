@@ -53,11 +53,9 @@ process.on('SIGINT', async () => {
   });
 });
 
-// Configure Flowise API details with chatflow ID
+// Configure Flowise API details
 const FLOWISE_BASE_URL = process.env.FLOWISE_API_ENDPOINT.replace(/\/$/, '');
 const FLOWISE_API_ENDPOINT = `${FLOWISE_BASE_URL}/api/v1/prediction/${process.env.FLOWISE_CHATFLOW_ID}`;
-
-log.info(`Configured Flowise API endpoint: ${FLOWISE_API_ENDPOINT}`);
 
 // Language mapping for code blocks
 const languageMap = {
@@ -260,27 +258,58 @@ const shouldProcessMessage = (event) => {
   const isInThread = !!event.thread_ts;
   const isBot = !!event.bot_id;
 
-  if (isBot) return false;
-  if (isDM) return true;
-  if (isChannel && (hasBotMention || isInThread)) return true;
+  // Add detailed logging
+  log.debug(`Message evaluation:
+    Message text: "${event.text}"
+    Bot ID: ${app.client.botUserId}
+    Channel type: ${event.channel_type}
+    Is DM: ${isDM}
+    Is Channel: ${isChannel}
+    Has mention: ${hasBotMention}
+    In thread: ${isInThread}
+    Is bot message: ${isBot}
+    Raw event: ${JSON.stringify(event, null, 2)}
+  `);
 
+  if (isBot) {
+    log.debug('Skipping - bot message');
+    return false;
+  }
+  if (isDM) {
+    log.debug('Processing - direct message');
+    return true;
+  }
+  if (isChannel && (hasBotMention || isInThread)) {
+    log.debug('Processing - channel message with mention or in thread');
+    return true;
+  }
+
+  log.debug('Skipping - no mention or thread in channel');
   return false;
 };
 
 // Handle all messages (both channel messages and DMs)
 app.event('message', async ({ event, say }) => {
   try {
-    log.debug(`Received message in ${event.channel_type} - thread: ${!!event.thread_ts}, mention: ${event.text?.includes(`<@${app.client.botUserId}>`)}`);
+    log.debug(`Received raw message event: ${JSON.stringify(event, null, 2)}`);
+
+    log.debug(`Initial message check:
+      Channel type: ${event.channel_type}
+      Thread: ${!!event.thread_ts}
+      Text: "${event.text}"
+      Bot ID: ${app.client.botUserId}
+    `);
 
     if (!shouldProcessMessage(event)) {
-      log.debug('Skipping message - does not meet processing criteria');
       return;
     }
 
     log.info(`Processing message in ${event.channel_type}`);
 
     // Clean the message text (remove bot mention if present)
-    const messageText = event.text?.replace(`<@${app.client.botUserId}>`, '').trim() || '';
+    const messageText = event.text?.replace(/<@[^>]+>/g, '').trim() || '';
+    
+    log.debug(`Cleaned message text: "${messageText}"`);
     
     // Use thread_ts for conversation context
     const conversationId = event.thread_ts || event.ts;
@@ -290,7 +319,10 @@ app.event('message', async ({ event, say }) => {
       ? `slack_dm_${event.channel}_${conversationId}`
       : `slack_${event.channel}_${conversationId}`;
 
-    log.debug(`Making API request with session ID: ${sessionId}`);
+    log.debug(`Making API request:
+      Session ID: ${sessionId}
+      Message text length: ${messageText.length}
+    `);
 
     // Make API request to Flowise
     const response = await axios({
@@ -310,7 +342,10 @@ app.event('message', async ({ event, say }) => {
       validateStatus: (status) => status === 200
     });
 
-    log.debug(`Received API response with status: ${response.status}`);
+    log.debug(`API response received:
+      Status: ${response.status}
+      Has text: ${!!response.data?.text}
+    `);
 
     const cleanResponse = extractCleanResponse(response.data);
     const blocks = createSlackBlocks(cleanResponse);
@@ -324,7 +359,14 @@ app.event('message', async ({ event, say }) => {
     log.info('Successfully sent response');
 
   } catch (error) {
-    log.error('Error handling message:', error);
+    log.error(`Error handling message: ${error.message}`);
+    if (error.response) {
+      log.error(`API error details:
+        Status: ${error.response.status}
+        Status Text: ${error.response.statusText}
+        Data: ${JSON.stringify(error.response.data)}
+      `);
+    }
     await say({
       text: "I'm sorry, I encountered an error processing your request. Please try again later.",
       thread_ts: event.thread_ts || event.ts
