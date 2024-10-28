@@ -216,90 +216,35 @@ const extractCleanResponse = (flowiseResponse) => {
   }
 };
 
-// Handle mentions in channels
-app.event('app_mention', async ({ event, say }) => {
-  try {
-    console.log('Received channel mention:', event);
-    
-    // Clean the message text (remove bot mention if present)
-    const messageText = event.text.replace(`<@${app.client.botUserId}>`, '').trim();
-    
-    // Use thread_ts if it exists (meaning it's in a thread), otherwise use the message ts as the conversation ID
-    const conversationId = event.thread_ts || event.ts;
-    
-    // Log the session ID and request details
-    const sessionId = `slack_${event.channel}_${conversationId}`;
-    console.log('Making Flowise API request:', {
-      endpoint: FLOWISE_API_ENDPOINT,
-      sessionId: sessionId,
-      messageText: messageText
-    });
-
-    // Make API request to Flowise
-    const response = await axios({
-      method: 'post',
-      url: FLOWISE_API_ENDPOINT,
-      data: {
-        question: messageText,
-        overrideConfig: {
-          sessionId: sessionId
-        }
-      },
-      headers: {
-        'Content-Type': 'application/json',
-        'Accept': 'application/json',
-        'Authorization': `Bearer ${process.env.FLOWISE_API_KEY}`
-      },
-      validateStatus: (status) => status === 200
-    });
-
-    console.log('Received response from Flowise:', {
-      status: response.status,
-      dataType: typeof response.data,
-      hasText: response.data && response.data.text ? 'yes' : 'no'
-    });
-
-    const cleanResponse = extractCleanResponse(response.data);
-    const blocks = createSlackBlocks(cleanResponse);
-
-    await say({
-      blocks: blocks,
-      text: cleanResponse,
-      thread_ts: event.thread_ts || event.ts
-    });
-
-  } catch (error) {
-    console.error('Error handling channel mention:', error);
-    if (error.response) {
-      console.error('API error details:', {
-        status: error.response.status,
-        statusText: error.response.statusText,
-        data: error.response.data
-      });
-    }
-    await say({
-      text: "I'm sorry, I encountered an error processing your request. Please try again later.",
-      thread_ts: event.thread_ts || event.ts
-    });
-  }
-});
-
-// Handle direct messages
+// Handle all messages (both channel messages and DMs)
 app.event('message', async ({ event, say }) => {
-  // Only respond to direct messages, not channel messages
-  if (event.channel_type === 'im' && !event.bot_id) {
-    try {
-      console.log('Received direct message:', event);
+  try {
+    // Handle channel messages (including threads)
+    if (
+      // Respond to direct mentions or thread replies in channels
+      ((event.text?.includes(`<@${app.client.botUserId}>`) || 
+        (event.thread_ts && event.channel_type === 'channel')) &&
+       !event.bot_id) ||
+      // Handle direct messages
+      (event.channel_type === 'im' && !event.bot_id)
+    ) {
+      console.log('Received message:', event);
       
-      // Use thread_ts if it exists, otherwise use the message ts as the conversation ID
+      // Clean the message text (remove bot mention if present)
+      const messageText = event.text?.replace(`<@${app.client.botUserId}>`, '').trim() || '';
+      
+      // Use thread_ts for conversation context
       const conversationId = event.thread_ts || event.ts;
       
-      // Log the session ID and request details
-      const sessionId = `slack_dm_${event.channel}_${conversationId}`;
+      // Create session ID based on channel type
+      const sessionId = event.channel_type === 'im' 
+        ? `slack_dm_${event.channel}_${conversationId}`
+        : `slack_${event.channel}_${conversationId}`;
+
       console.log('Making Flowise API request:', {
         endpoint: FLOWISE_API_ENDPOINT,
         sessionId: sessionId,
-        messageText: event.text.trim()
+        messageText: messageText
       });
 
       // Make API request to Flowise
@@ -307,7 +252,7 @@ app.event('message', async ({ event, say }) => {
         method: 'post',
         url: FLOWISE_API_ENDPOINT,
         data: {
-          question: event.text.trim(),
+          question: messageText,
           overrideConfig: {
             sessionId: sessionId
           }
@@ -334,21 +279,20 @@ app.event('message', async ({ event, say }) => {
         text: cleanResponse,
         thread_ts: event.thread_ts || event.ts
       });
-
-    } catch (error) {
-      console.error('Error handling direct message:', error);
-      if (error.response) {
-        console.error('API error details:', {
-          status: error.response.status,
-          statusText: error.response.statusText,
-          data: error.response.data
-        });
-      }
-      await say({
-        text: "I'm sorry, I encountered an error processing your request. Please try again later.",
-        thread_ts: event.thread_ts || event.ts
+    }
+  } catch (error) {
+    console.error('Error handling message:', error);
+    if (error.response) {
+      console.error('API error details:', {
+        status: error.response.status,
+        statusText: error.response.statusText,
+        data: error.response.data
       });
     }
+    await say({
+      text: "I'm sorry, I encountered an error processing your request. Please try again later.",
+      thread_ts: event.thread_ts || event.ts
+    });
   }
 });
 
