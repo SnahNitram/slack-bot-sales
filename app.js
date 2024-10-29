@@ -15,6 +15,17 @@ const app = new App({
   appToken: process.env.SLACK_APP_TOKEN
 });
 
+// Store bot user ID
+let botUserId = '';
+
+// Initialize bot ID
+app.client.auth.test().then(response => {
+    botUserId = response.user_id;
+    console.log(`[INFO] Bot user ID initialized: ${botUserId}`);
+}).catch(error => {
+    console.error('[ERROR] Failed to get bot user ID:', error);
+});
+
 // Create HTTP server for health checks
 const server = createServer((req, res) => {
   res.writeHead(200);
@@ -34,23 +45,12 @@ const log = {
   }
 };
 
-// Graceful shutdown handlers
+// Simplified shutdown handler
 process.on('SIGTERM', async () => {
-  log.info('SIGTERM received, shutting down...');
+  log.info('Shutting down...');
   await app.stop();
-  server.close(() => {
-    log.info('HTTP server closed');
-    process.exit(0);
-  });
-});
-
-process.on('SIGINT', async () => {
-  log.info('SIGINT received, shutting down...');
-  await app.stop();
-  server.close(() => {
-    log.info('HTTP server closed');
-    process.exit(0);
-  });
+  server.close();
+  process.exit(0);
 });
 
 // Configure Flowise API details
@@ -152,30 +152,24 @@ const convertMarkdownToSlack = (text) => {
     return `${prefix}${content}${prefix}\n`;
   });
   
-  // Convert bold
+  // Convert bold and italic
   text = text.replace(/\*\*(.+?)\*\*/g, '*$1*');
-  
-  // Convert italic
   text = text.replace(/_(.+?)_/g, '_$1_');
   text = text.replace(/\*([^*]+)\*/g, '_$1_');
   
-  // Convert bullet points with multiple levels
+  // Convert lists
   text = text.replace(/^(\s*)-\s+(.+)$/gm, (match, spaces, content) => {
     const level = Math.floor(spaces.length / 2);
     return `${'  '.repeat(level)}• ${content}`;
   });
-  
-  // Convert numbered lists with multiple levels
   text = text.replace(/^(\s*)\d+\.\s+(.+)$/gm, (match, spaces, content) => {
     const level = Math.floor(spaces.length / 2);
     return `${'  '.repeat(level)}• ${content}`;
   });
   
-  // Convert block quotes
+  // Convert block quotes and links
   text = text.replace(/^>\s+(.+)$/gm, '>>> $1');
   text = text.replace(/^>\s*$/gm, '');
-  
-  // Convert links
   text = text.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<$2|$1>');
   
   // Convert emoji codes
@@ -192,26 +186,8 @@ const createSlackBlocks = (text) => {
   const sections = text.split('\n\n');
   
   sections.forEach(section => {
-    if (section.startsWith('```')) {
-      // Code block
-      blocks.push({
-        type: 'section',
-        text: {
-          type: 'mrkdwn',
-          text: section
-        }
-      });
-    } else if (section.startsWith('>>>')) {
-      // Block quote
-      blocks.push({
-        type: 'section',
-        text: {
-          type: 'mrkdwn',
-          text: section
-        }
-      });
-    } else if (section.trim().startsWith('|') && section.includes('\n')) {
-      // Table
+    if (section.startsWith('```') || section.startsWith('>>>') || 
+        (section.trim().startsWith('|') && section.includes('\n'))) {
       blocks.push({
         type: 'section',
         text: {
@@ -220,7 +196,6 @@ const createSlackBlocks = (text) => {
         }
       });
     } else {
-      // Regular text
       blocks.push({
         type: 'section',
         text: {
@@ -254,62 +229,42 @@ const extractCleanResponse = (flowiseResponse) => {
 const shouldProcessMessage = (event) => {
   const isDM = event.channel_type === 'im';
   const isChannel = event.channel_type === 'channel' || event.channel_type === 'group';
-  const hasBotMention = event.text?.includes(`<@${app.client.botUserId}>`);
+  const hasBotMention = event.text?.includes(`<@${botUserId}>`);
   const isInThread = !!event.thread_ts;
   const isBot = !!event.bot_id;
 
-  // Add detailed logging
   log.debug(`Message evaluation:
     Message text: "${event.text}"
-    Bot ID: ${app.client.botUserId}
+    Bot ID: ${botUserId}
     Channel type: ${event.channel_type}
     Is DM: ${isDM}
     Is Channel: ${isChannel}
     Has mention: ${hasBotMention}
     In thread: ${isInThread}
     Is bot message: ${isBot}
-    Raw event: ${JSON.stringify(event, null, 2)}
   `);
 
-  if (isBot) {
-    log.debug('Skipping - bot message');
-    return false;
-  }
-  if (isDM) {
-    log.debug('Processing - direct message');
-    return true;
-  }
-  if (isChannel && (hasBotMention || isInThread)) {
-    log.debug('Processing - channel message with mention or in thread');
-    return true;
-  }
-
-  log.debug('Skipping - no mention or thread in channel');
+  if (isBot) return false;
+  if (isDM) return true;
+  if (isChannel && (hasBotMention || isInThread)) return true;
+  
   return false;
 };
 
-// Handle all messages (both channel messages and DMs)
+// Handle messages
 app.event('message', async ({ event, say }) => {
   try {
-    log.debug(`Received raw message event: ${JSON.stringify(event, null, 2)}`);
-
-    log.debug(`Initial message check:
-      Channel type: ${event.channel_type}
-      Thread: ${!!event.thread_ts}
-      Text: "${event.text}"
-      Bot ID: ${app.client.botUserId}
-    `);
+    log.debug(`Received message event in ${event.channel_type}`);
 
     if (!shouldProcessMessage(event)) {
+      log.debug('Skipping message - does not meet processing criteria');
       return;
     }
 
     log.info(`Processing message in ${event.channel_type}`);
 
     // Clean the message text (remove bot mention if present)
-    const messageText = event.text?.replace(/<@[^>]+>/g, '').trim() || '';
-    
-    log.debug(`Cleaned message text: "${messageText}"`);
+    const messageText = event.text?.replace(`<@${botUserId}>`, '').trim() || '';
     
     // Use thread_ts for conversation context
     const conversationId = event.thread_ts || event.ts;
@@ -318,11 +273,6 @@ app.event('message', async ({ event, say }) => {
     const sessionId = event.channel_type === 'im' 
       ? `slack_dm_${event.channel}_${conversationId}`
       : `slack_${event.channel}_${conversationId}`;
-
-    log.debug(`Making API request:
-      Session ID: ${sessionId}
-      Message text length: ${messageText.length}
-    `);
 
     // Make API request to Flowise
     const response = await axios({
@@ -359,14 +309,7 @@ app.event('message', async ({ event, say }) => {
     log.info('Successfully sent response');
 
   } catch (error) {
-    log.error(`Error handling message: ${error.message}`);
-    if (error.response) {
-      log.error(`API error details:
-        Status: ${error.response.status}
-        Status Text: ${error.response.statusText}
-        Data: ${JSON.stringify(error.response.data)}
-      `);
-    }
+    log.error('Error handling message:', error);
     await say({
       text: "I'm sorry, I encountered an error processing your request. Please try again later.",
       thread_ts: event.thread_ts || event.ts
@@ -382,7 +325,6 @@ app.error(async (error) => {
 // Start the app
 (async () => {
   try {
-    // Start both the Slack app and HTTP server
     await app.start();
     server.listen(process.env.PORT || 3000);
     log.info('⚡️ Slack Bolt app and health check server are running!');

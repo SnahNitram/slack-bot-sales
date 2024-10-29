@@ -1,5 +1,6 @@
 # Ignore .env file
 .env
+.DS_Store
 
 # Ignore all .log files
 *.log
