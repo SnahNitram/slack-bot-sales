@@ -241,13 +241,30 @@ const shouldProcessMessage = (event) => {
     Is Channel: ${isChannel}
     Has mention: ${hasBotMention}
     In thread: ${isInThread}
+    Thread ts: ${event.thread_ts}
     Is bot message: ${isBot}
   `);
 
+  // Don't process bot messages
   if (isBot) return false;
-  if (isDM) return true;
-  if (isChannel && (hasBotMention || isInThread)) return true;
   
+  // Always process DMs
+  if (isDM) return true;
+
+  // For channels, only process if:
+  // 1. Message directly mentions the bot, or
+  // 2. Message is in a thread where the bot has already been mentioned
+  if (isChannel) {
+    // Direct mention - always process
+    if (hasBotMention) return true;
+    
+    // Thread - only process if bot was previously mentioned in the thread
+    if (isInThread && event.text) {
+      // We'll let the thread continue if the message has our mention
+      return hasBotMention;
+    }
+  }
+
   return false;
 };
 
