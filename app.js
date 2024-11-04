@@ -312,10 +312,6 @@ const handleMessage = async (text, files = null, client = null) => {
         file: file.id
       });
 
-      if (!fileInfo.file.url_private) {
-        throw new Error('No private URL available for file download');
-      }
-
       log.debug('File information:', {
         name: fileInfo.file.name,
         type: fileInfo.file.mimetype,
@@ -333,9 +329,10 @@ const handleMessage = async (text, files = null, client = null) => {
         responseType: 'arraybuffer'
       });
 
-      // Convert to base64 and send to Flowise
+      // Convert to base64 and prepare the upload format according to Flowise docs
       const base64File = Buffer.from(fileResponse.data).toString('base64');
       
+      // Send to Flowise using their documented format
       const response = await axios({
         method: 'post',
         url: FLOWISE_API_ENDPOINT,
@@ -372,7 +369,12 @@ const handleMessage = async (text, files = null, client = null) => {
 
     return response.data;
   } catch (error) {
-    log.error('Error in handleMessage:', error);
+    log.error('Error in handleMessage:', {
+      error: error.message,
+      code: error.code,
+      url: FLOWISE_API_ENDPOINT,
+      stack: error.stack
+    });
     throw error;
   }
 };
