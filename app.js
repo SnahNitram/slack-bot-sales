@@ -344,13 +344,65 @@ const handleMessage = async (text, files = null) => {
 };
 
 // Update the message event handler
-app.message(async ({ message, say }) => {
+app.message(async ({ message, say, client }) => {
   try {
-    const response = await handleMessage(message.text, message.files);
+    // Get bot's own info if we haven't already
+    if (!botUserId) {
+      const authResult = await client.auth.test();
+      botUserId = authResult.user_id;
+    }
+
+    // Determine if this is a channel or DM
+    const isDM = message.channel_type === 'im';
+    const isChannel = message.channel_type === 'channel' || message.channel_type === 'group';
+    
+    // Check if message is from a bot (including ourselves)
+    if (message.bot_id || message.subtype === 'bot_message') {
+      return;
+    }
+
+    // Get message text and any file attachments
+    const messageText = message.text || '';
+    const hasMention = messageText.includes(`<@${botUserId}>`);
+    const inThread = !!message.thread_ts;
+    
+    // Log message evaluation for debugging
+    log.debug('Message evaluation:', {
+      'Message text': messageText,
+      'Bot ID': botUserId,
+      'Channel type': message.channel_type,
+      'Is DM': isDM,
+      'Is Channel': isChannel,
+      'Has mention': hasMention,
+      'In thread': inThread,
+      'Thread ts': message.thread_ts,
+      'Is bot message': !!message.bot_id
+    });
+
+    // Determine if we should respond
+    const shouldRespond = 
+      isDM || // Always respond in DMs
+      (isChannel && hasMention) || // Respond in channels when mentioned
+      (inThread && message.thread_ts && await isThreadParticipant(message.thread_ts, client, message.channel, botUserId)); // Respond in threads we're part of
+
+    if (!shouldRespond) {
+      log.debug('Skipping message - does not meet response criteria');
+      return;
+    }
+
+    log.info(`Processing message in ${message.channel_type}`);
+
+    // Process the message
+    const response = await handleMessage(messageText, message.files);
+    
+    // Send the response
     await say({
       text: extractCleanResponse(response),
       thread_ts: message.thread_ts || message.ts
     });
+
+    log.info('Successfully sent response');
+
   } catch (error) {
     log.error('Error handling message:', error);
     await say({
@@ -359,6 +411,24 @@ app.message(async ({ message, say }) => {
     });
   }
 });
+
+// Helper function to check if bot is part of a thread
+async function isThreadParticipant(threadTs, client, channel, botUserId) {
+  try {
+    const result = await client.conversations.replies({
+      channel: channel,
+      ts: threadTs
+    });
+    
+    return result.messages.some(msg => 
+      msg.user === botUserId || 
+      (msg.bot_id && msg.username === process.env.SLACK_BOT_USERNAME)
+    );
+  } catch (error) {
+    log.error('Error checking thread participation:', error);
+    return false;
+  }
+}
 
 // Update the file_shared event handler
 app.event('file_shared', async ({ event, client }) => {
