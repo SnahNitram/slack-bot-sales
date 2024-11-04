@@ -61,6 +61,7 @@ process.on('SIGTERM', async () => {
 // Configure Flowise API details
 const FLOWISE_BASE_URL = process.env.FLOWISE_API_ENDPOINT.replace(/\/$/, '');
 const FLOWISE_API_ENDPOINT = `${FLOWISE_BASE_URL}/api/v1/prediction/${process.env.FLOWISE_CHATFLOW_ID}`;
+const FLOWISE_API_KEY = process.env.FLOWISE_API_KEY;
 
 // Language mapping for code blocks
 const languageMap = {
@@ -280,56 +281,64 @@ async function saveBufferToTemp(buffer, filename) {
   return tempPath;
 }
 
+// Add a validation function
+function validateFlowiseConfig() {
+  if (!FLOWISE_API_ENDPOINT) {
+    throw new Error('FLOWISE_API_ENDPOINT is not configured');
+  }
+  if (!FLOWISE_API_KEY) {
+    throw new Error('FLOWISE_API_KEY is not configured');
+  }
+  
+  // Validate URL format
+  try {
+    new URL(FLOWISE_API_ENDPOINT);
+  } catch (e) {
+    throw new Error(`Invalid FLOWISE_API_ENDPOINT format: ${FLOWISE_API_ENDPOINT}`);
+  }
+}
+
 // Update the handleMessage function
 const handleMessage = async (text, files = null) => {
   try {
+    // Validate Flowise configuration
+    validateFlowiseConfig();
+    
+    log.debug('Flowise API Config:', {
+      endpoint: FLOWISE_API_ENDPOINT,
+      hasApiKey: !!FLOWISE_API_KEY
+    });
+
     // If there are files, handle them according to Flowise docs
     if (files && files.length > 0) {
       const file = files[0];
       
-      // Add logging and validation
-      log.debug('File information:', {
+      log.debug('Processing file:', {
         name: file.name,
         type: file.mimetype,
-        hasUrl: !!file.url_private,
-        size: file.size
+        hasUrl: !!file.url_private
       });
 
-      // Validate file URL
-      if (!file.url_private) {
-        throw new Error('No private URL available for file download');
-      }
-
-      // Download file with proper error handling
-      let fileResponse;
-      try {
-        fileResponse = await axios({
-          method: 'get',
-          url: file.url_private,
-          headers: {
-            'Authorization': `Bearer ${process.env.SLACK_BOT_TOKEN}`
-          },
-          responseType: 'arraybuffer',
-          validateStatus: status => status < 500 // Handle only 5xx errors as errors
-        });
-      } catch (downloadError) {
-        log.error('Error downloading file:', {
-          error: downloadError.message,
-          status: downloadError.response?.status,
-          url: file.url_private
-        });
-        throw new Error('Failed to download file from Slack');
-      }
+      const fileResponse = await axios({
+        method: 'get',
+        url: file.url_private,
+        headers: {
+          'Authorization': `Bearer ${process.env.SLACK_BOT_TOKEN}`
+        },
+        responseType: 'arraybuffer'
+      });
 
       // Convert to base64 and send to Flowise
       const base64File = Buffer.from(fileResponse.data).toString('base64');
+      
+      log.debug('Sending request to Flowise with file');
       
       const response = await axios({
         method: 'post',
         url: FLOWISE_API_ENDPOINT,
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${process.env.FLOWISE_API_KEY}`
+          'Authorization': `Bearer ${FLOWISE_API_KEY}`
         },
         data: {
           question: text || "Process this file",
@@ -346,12 +355,14 @@ const handleMessage = async (text, files = null) => {
     }
 
     // Regular text message without files
+    log.debug('Sending text-only request to Flowise');
+    
     const response = await axios({
       method: 'post',
       url: FLOWISE_API_ENDPOINT,
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${process.env.FLOWISE_API_KEY}`
+        'Authorization': `Bearer ${FLOWISE_API_KEY}`
       },
       data: {
         question: text
@@ -360,10 +371,12 @@ const handleMessage = async (text, files = null) => {
 
     return response.data;
   } catch (error) {
-    log.error('Error in handleMessage:', error);
-    if (error.response) {
-      log.error('Response data:', error.response.data);
-    }
+    log.error('Error in handleMessage:', {
+      error: error.message,
+      code: error.code,
+      url: FLOWISE_API_ENDPOINT,
+      stack: error.stack
+    });
     throw error;
   }
 };
