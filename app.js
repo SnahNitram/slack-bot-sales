@@ -280,164 +280,76 @@ async function saveBufferToTemp(buffer, filename) {
   return tempPath;
 }
 
-// Handle messages
-app.event('message', async ({ event, say }) => {
+// Update the message handling code
+const handleMessage = async (text, files = null) => {
   try {
-    log.debug(`Received message event in ${event.channel_type}`);
-
-    if (!shouldProcessMessage(event)) {
-      log.debug('Skipping message - does not meet processing criteria');
-      return;
-    }
-
-    log.info(`Processing message in ${event.channel_type}`);
-
-    // Clean the message text (remove bot mention if present)
-    const messageText = event.text?.replace(`<@${botUserId}>`, '').trim() || '';
-    
-    // Use thread_ts for conversation context
-    const conversationId = event.thread_ts || event.ts;
-    
-    // Create session ID based on channel type
-    const sessionId = event.channel_type === 'im' 
-      ? `slack_dm_${event.channel}_${conversationId}`
-      : `slack_${event.channel}_${conversationId}`;
-
-    // Make API request to Flowise
-    const response = await axios({
-      method: 'post',
-      url: FLOWISE_API_ENDPOINT,
-      data: {
-        question: messageText,
-        overrideConfig: {
-          sessionId: sessionId
-        }
-      },
-      headers: {
-        'Content-Type': 'application/json',
-        'Accept': 'application/json',
-        'Authorization': `Bearer ${process.env.FLOWISE_API_KEY}`
-      },
-      validateStatus: (status) => status === 200
-    });
-
-    log.debug(`API response received:
-      Status: ${response.status}
-      Has text: ${!!response.data?.text}
-    `);
-
-    const cleanResponse = extractCleanResponse(response.data);
-    const blocks = createSlackBlocks(cleanResponse);
-
-    await say({
-      blocks: blocks,
-      text: cleanResponse,
-      thread_ts: event.thread_ts || event.ts
-    });
-
-    log.info('Successfully sent response');
-
-    if (event.files && event.files.length > 0) {
-      let tempFilePath = null;
-      try {
-        const file = event.files[0];
-        const fileResponse = await axios({
-          method: 'get',
-          url: file.url_private,
-          headers: {
-            'Authorization': `Bearer ${process.env.SLACK_BOT_TOKEN}`
-          },
-          responseType: 'arraybuffer'
-        });
-
-        // Save to temp file
-        tempFilePath = await saveBufferToTemp(fileResponse.data, file.name);
-
-        const formData = new FormData();
-        formData.append('file', fs.createReadStream(tempFilePath), {
-          filename: file.name,
-          contentType: file.mimetype
-        });
-        formData.append('question', messageText || 'Process this file');
-        
-        const response = await axios({
-          method: 'post',
-          url: FLOWISE_API_ENDPOINT,
-          data: formData,
-          headers: {
-            ...formData.getHeaders(),
-            'Authorization': `Bearer ${process.env.FLOWISE_API_KEY}`
-          }
-        });
-      } finally {
-        // Clean up temp file
-        if (tempFilePath) {
-          try {
-            await fs.promises.unlink(tempFilePath);
-          } catch (err) {
-            log.error('Error cleaning up temp file:', err);
-          }
-        }
-      }
-    }
-
-  } catch (error) {
-    log.error('Error handling message:', error);
-    await say({
-      text: "I'm sorry, I encountered an error processing your request. Please try again later.",
-      thread_ts: event.thread_ts || event.ts
-    });
-  }
-});
-
-// Handle file uploads
-app.event('file_shared', async ({ event, client }) => {
-  let tempFilePath = null;
-  try {
-    // Get file information
-    const fileInfo = await client.files.info({
-      file: event.file_id
-    });
-
-    // Download the file
-    const fileResponse = await axios({
-      method: 'get',
-      url: fileInfo.file.url_private,
-      headers: {
-        'Authorization': `Bearer ${process.env.SLACK_BOT_TOKEN}`
-      },
-      responseType: 'arraybuffer'
-    });
-
-    // Save to temp file
-    tempFilePath = await saveBufferToTemp(fileResponse.data, fileInfo.file.name);
-
-    // Create form data
     const formData = new FormData();
-    formData.append('file', fs.createReadStream(tempFilePath), {
-      filename: fileInfo.file.name,
-      contentType: fileInfo.file.mimetype
-    });
-    formData.append('question', 'Process this file');
+    formData.append('question', text || 'Process this file');
+    
+    // If there are files, add the first one
+    if (files && files.length > 0) {
+      const file = files[0];
+      const fileResponse = await axios({
+        method: 'get',
+        url: file.url_private,
+        headers: {
+          'Authorization': `Bearer ${process.env.SLACK_BOT_TOKEN}`
+        },
+        responseType: 'arraybuffer'
+      });
+
+      formData.append('files', new Blob([fileResponse.data]), file.name);
+    }
 
     // Send to Flowise
-    const flowiseResponse = await axios({
+    const response = await axios({
       method: 'post',
       url: FLOWISE_API_ENDPOINT,
       data: formData,
       headers: {
-        ...formData.getHeaders(),
-        'Authorization': `Bearer ${process.env.FLOWISE_API_KEY}`
+        'Authorization': `Bearer ${process.env.FLOWISE_API_KEY}`,
+        ...formData.getHeaders()
       }
     });
 
-    // Send response back to Slack
+    return response.data;
+  } catch (error) {
+    log.error('Error in handleMessage:', error);
+    throw error;
+  }
+};
+
+// Update the message event handler
+app.message(async ({ message, say }) => {
+  try {
+    const response = await handleMessage(message.text, message.files);
+    await say({
+      text: extractCleanResponse(response),
+      thread_ts: message.thread_ts || message.ts
+    });
+  } catch (error) {
+    log.error('Error handling message:', error);
+    await say({
+      text: "I'm sorry, I encountered an error processing your message. Please try again later.",
+      thread_ts: message.thread_ts || message.ts
+    });
+  }
+});
+
+// Update the file_shared event handler
+app.event('file_shared', async ({ event, client }) => {
+  try {
+    const fileInfo = await client.files.info({
+      file: event.file_id
+    });
+
+    const response = await handleMessage(null, [fileInfo.file]);
+    
     await client.chat.postMessage({
       channel: event.channel,
       thread_ts: event.thread_ts || event.ts,
-      text: extractCleanResponse(flowiseResponse.data)
+      text: extractCleanResponse(response)
     });
-
   } catch (error) {
     log.error('Error handling file:', error);
     await client.chat.postMessage({
@@ -445,15 +357,6 @@ app.event('file_shared', async ({ event, client }) => {
       thread_ts: event.thread_ts || event.ts,
       text: "I'm sorry, I encountered an error processing your file. Please try again later."
     });
-  } finally {
-    // Clean up temp file
-    if (tempFilePath) {
-      try {
-        await fs.promises.unlink(tempFilePath);
-      } catch (err) {
-        log.error('Error cleaning up temp file:', err);
-      }
-    }
   }
 });
 
