@@ -283,6 +283,7 @@ async function saveBufferToTemp(buffer, filename) {
 // Update the message handling code
 const handleMessage = async (text, files = null) => {
   try {
+    // Create form data
     const formData = new FormData();
     formData.append('question', text || 'Process this file');
     
@@ -298,23 +299,33 @@ const handleMessage = async (text, files = null) => {
         responseType: 'arraybuffer'
       });
 
-      formData.append('files', new Blob([fileResponse.data]), file.name);
+      // Create form data with the correct field name 'files'
+      formData.append('files', fileResponse.data, {
+        filename: file.name,
+        contentType: file.mimetype
+      });
     }
 
-    // Send to Flowise
-    const response = await axios({
-      method: 'post',
-      url: FLOWISE_API_ENDPOINT,
-      data: formData,
-      headers: {
-        'Authorization': `Bearer ${process.env.FLOWISE_API_KEY}`,
-        ...formData.getHeaders()
+    // Send to Flowise with the correct headers
+    const response = await axios.post(
+      FLOWISE_API_ENDPOINT,
+      formData,
+      {
+        headers: {
+          ...formData.getHeaders(),
+          'Authorization': `Bearer ${process.env.FLOWISE_API_KEY}`
+        },
+        maxContentLength: Infinity,
+        maxBodyLength: Infinity
       }
-    });
+    );
 
     return response.data;
   } catch (error) {
     log.error('Error in handleMessage:', error);
+    if (error.response) {
+      log.error('Response data:', error.response.data);
+    }
     throw error;
   }
 };
