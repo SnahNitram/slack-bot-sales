@@ -9,6 +9,8 @@ const { createServer } = require('http');
 const FormData = require('form-data');
 const { Readable } = require('stream');
 const fs = require('fs');
+const path = require('path');
+const os = require('os');
 
 // Initialize the Slack app
 const app = new App({
@@ -271,6 +273,13 @@ const shouldProcessMessage = (event) => {
   return false;
 };
 
+// Helper function to create temp file
+async function saveBufferToTemp(buffer, filename) {
+  const tempPath = path.join(os.tmpdir(), `slack-${Date.now()}-${filename}`);
+  await fs.promises.writeFile(tempPath, buffer);
+  return tempPath;
+}
+
 // Handle messages
 app.event('message', async ({ event, say }) => {
   try {
@@ -329,43 +338,47 @@ app.event('message', async ({ event, say }) => {
     log.info('Successfully sent response');
 
     if (event.files && event.files.length > 0) {
-      // Handle files attached to messages
-      const file = event.files[0];
-      const fileResponse = await axios({
-        method: 'get',
-        url: file.url_private,
-        headers: {
-          'Authorization': `Bearer ${process.env.SLACK_BOT_TOKEN}`
-        },
-        responseType: 'arraybuffer'
-      });
+      let tempFilePath = null;
+      try {
+        const file = event.files[0];
+        const fileResponse = await axios({
+          method: 'get',
+          url: file.url_private,
+          headers: {
+            'Authorization': `Bearer ${process.env.SLACK_BOT_TOKEN}`
+          },
+          responseType: 'arraybuffer'
+        });
 
-      const formData = new FormData();
-      const buffer = Buffer.from(fileResponse.data);
-      const stream = Readable.from(buffer);
-      
-      formData.append('file', stream, {
-        filename: file.name,
-        contentType: file.mimetype
-      });
-      formData.append('question', messageText || 'Process this file');
-      
-      const response = await axios({
-        method: 'post',
-        url: FLOWISE_API_ENDPOINT,
-        data: formData,
-        headers: {
-          ...formData.getHeaders(),
-          'Authorization': `Bearer ${process.env.FLOWISE_API_KEY}`
+        // Save to temp file
+        tempFilePath = await saveBufferToTemp(fileResponse.data, file.name);
+
+        const formData = new FormData();
+        formData.append('file', fs.createReadStream(tempFilePath), {
+          filename: file.name,
+          contentType: file.mimetype
+        });
+        formData.append('question', messageText || 'Process this file');
+        
+        const response = await axios({
+          method: 'post',
+          url: FLOWISE_API_ENDPOINT,
+          data: formData,
+          headers: {
+            ...formData.getHeaders(),
+            'Authorization': `Bearer ${process.env.FLOWISE_API_KEY}`
+          }
+        });
+      } finally {
+        // Clean up temp file
+        if (tempFilePath) {
+          try {
+            await fs.promises.unlink(tempFilePath);
+          } catch (err) {
+            log.error('Error cleaning up temp file:', err);
+          }
         }
-      });
-
-      // Send response back to Slack
-      await say({
-        channel: event.channel,
-        thread_ts: event.thread_ts || event.ts,
-        text: extractCleanResponse(response.data)
-      });
+      }
     }
 
   } catch (error) {
@@ -379,6 +392,7 @@ app.event('message', async ({ event, say }) => {
 
 // Handle file uploads
 app.event('file_shared', async ({ event, client }) => {
+  let tempFilePath = null;
   try {
     // Get file information
     const fileInfo = await client.files.info({
@@ -395,12 +409,12 @@ app.event('file_shared', async ({ event, client }) => {
       responseType: 'arraybuffer'
     });
 
-    // Create form data for Flowise
+    // Save to temp file
+    tempFilePath = await saveBufferToTemp(fileResponse.data, fileInfo.file.name);
+
+    // Create form data
     const formData = new FormData();
-    const buffer = Buffer.from(fileResponse.data);
-    const stream = Readable.from(buffer);
-    
-    formData.append('file', stream, {
+    formData.append('file', fs.createReadStream(tempFilePath), {
       filename: fileInfo.file.name,
       contentType: fileInfo.file.mimetype
     });
@@ -431,6 +445,15 @@ app.event('file_shared', async ({ event, client }) => {
       thread_ts: event.thread_ts || event.ts,
       text: "I'm sorry, I encountered an error processing your file. Please try again later."
     });
+  } finally {
+    // Clean up temp file
+    if (tempFilePath) {
+      try {
+        await fs.promises.unlink(tempFilePath);
+      } catch (err) {
+        log.error('Error cleaning up temp file:', err);
+      }
+    }
   }
 });
 
