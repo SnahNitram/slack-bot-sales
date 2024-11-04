@@ -7,6 +7,8 @@ const axios = require('axios');
 const { marked } = require('marked');
 const { createServer } = require('http');
 const FormData = require('form-data');
+const { Readable } = require('stream');
+const fs = require('fs');
 
 // Initialize the Slack app
 const app = new App({
@@ -339,11 +341,16 @@ app.event('message', async ({ event, say }) => {
       });
 
       const formData = new FormData();
-      formData.append('file', new Blob([fileResponse.data]), file.name);
+      const buffer = Buffer.from(fileResponse.data);
+      const stream = Readable.from(buffer);
+      
+      formData.append('file', stream, {
+        filename: file.name,
+        contentType: file.mimetype
+      });
       formData.append('question', messageText || 'Process this file');
       
-      // Update your Flowise request to use formData
-      const flowiseResponse = await axios({
+      const response = await axios({
         method: 'post',
         url: FLOWISE_API_ENDPOINT,
         data: formData,
@@ -357,7 +364,7 @@ app.event('message', async ({ event, say }) => {
       await say({
         channel: event.channel,
         thread_ts: event.thread_ts || event.ts,
-        text: extractCleanResponse(flowiseResponse.data)
+        text: extractCleanResponse(response.data)
       });
     }
 
@@ -390,7 +397,13 @@ app.event('file_shared', async ({ event, client }) => {
 
     // Create form data for Flowise
     const formData = new FormData();
-    formData.append('file', new Blob([fileResponse.data]), fileInfo.file.name);
+    const buffer = Buffer.from(fileResponse.data);
+    const stream = Readable.from(buffer);
+    
+    formData.append('file', stream, {
+      filename: fileInfo.file.name,
+      contentType: fileInfo.file.mimetype
+    });
     formData.append('question', 'Process this file');
 
     // Send to Flowise
