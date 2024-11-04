@@ -286,19 +286,44 @@ const handleMessage = async (text, files = null) => {
     // If there are files, handle them according to Flowise docs
     if (files && files.length > 0) {
       const file = files[0];
-      const fileResponse = await axios({
-        method: 'get',
-        url: file.url_private,
-        headers: {
-          'Authorization': `Bearer ${process.env.SLACK_BOT_TOKEN}`
-        },
-        responseType: 'arraybuffer'
+      
+      // Add logging and validation
+      log.debug('File information:', {
+        name: file.name,
+        type: file.mimetype,
+        hasUrl: !!file.url_private,
+        size: file.size
       });
 
-      // Convert the file to base64
+      // Validate file URL
+      if (!file.url_private) {
+        throw new Error('No private URL available for file download');
+      }
+
+      // Download file with proper error handling
+      let fileResponse;
+      try {
+        fileResponse = await axios({
+          method: 'get',
+          url: file.url_private,
+          headers: {
+            'Authorization': `Bearer ${process.env.SLACK_BOT_TOKEN}`
+          },
+          responseType: 'arraybuffer',
+          validateStatus: status => status < 500 // Handle only 5xx errors as errors
+        });
+      } catch (downloadError) {
+        log.error('Error downloading file:', {
+          error: downloadError.message,
+          status: downloadError.response?.status,
+          url: file.url_private
+        });
+        throw new Error('Failed to download file from Slack');
+      }
+
+      // Convert to base64 and send to Flowise
       const base64File = Buffer.from(fileResponse.data).toString('base64');
       
-      // Send to Flowise using their file upload format
       const response = await axios({
         method: 'post',
         url: FLOWISE_API_ENDPOINT,
@@ -430,11 +455,19 @@ async function isThreadParticipant(threadTs, client, channel, botUserId) {
   }
 }
 
-// Update the file_shared event handler
+// Update the file_shared event handler to include more error handling
 app.event('file_shared', async ({ event, client }) => {
   try {
+    log.debug('File shared event received:', event);
+    
     const fileInfo = await client.files.info({
       file: event.file_id
+    });
+
+    log.debug('File info retrieved:', {
+      name: fileInfo.file.name,
+      type: fileInfo.file.mimetype,
+      hasUrl: !!fileInfo.file.url_private
     });
 
     const response = await handleMessage(null, [fileInfo.file]);
