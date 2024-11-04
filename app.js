@@ -280,14 +280,10 @@ async function saveBufferToTemp(buffer, filename) {
   return tempPath;
 }
 
-// Update the message handling code
+// Update the handleMessage function
 const handleMessage = async (text, files = null) => {
   try {
-    // Create form data
-    const formData = new FormData();
-    formData.append('question', text || 'Process this file');
-    
-    // If there are files, add the first one
+    // If there are files, handle them according to Flowise docs
     if (files && files.length > 0) {
       const file = files[0];
       const fileResponse = await axios({
@@ -299,26 +295,43 @@ const handleMessage = async (text, files = null) => {
         responseType: 'arraybuffer'
       });
 
-      // Create form data with the correct field name 'files'
-      formData.append('files', fileResponse.data, {
-        filename: file.name,
-        contentType: file.mimetype
-      });
-    }
-
-    // Send to Flowise with the correct headers
-    const response = await axios.post(
-      FLOWISE_API_ENDPOINT,
-      formData,
-      {
+      // Convert the file to base64
+      const base64File = Buffer.from(fileResponse.data).toString('base64');
+      
+      // Send to Flowise using their file upload format
+      const response = await axios({
+        method: 'post',
+        url: FLOWISE_API_ENDPOINT,
         headers: {
-          ...formData.getHeaders(),
+          'Content-Type': 'application/json',
           'Authorization': `Bearer ${process.env.FLOWISE_API_KEY}`
         },
-        maxContentLength: Infinity,
-        maxBodyLength: Infinity
+        data: {
+          question: text || "Process this file",
+          uploads: [{
+            data: `data:${file.mimetype};base64,${base64File}`,
+            type: 'file',
+            name: file.name,
+            mime: file.mimetype
+          }]
+        }
+      });
+
+      return response.data;
+    }
+
+    // Regular text message without files
+    const response = await axios({
+      method: 'post',
+      url: FLOWISE_API_ENDPOINT,
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${process.env.FLOWISE_API_KEY}`
+      },
+      data: {
+        question: text
       }
-    );
+    });
 
     return response.data;
   } catch (error) {
