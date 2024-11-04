@@ -299,29 +299,34 @@ function validateFlowiseConfig() {
 }
 
 // Update the handleMessage function
-const handleMessage = async (text, files = null) => {
+const handleMessage = async (text, files = null, client = null) => {
   try {
-    // Validate Flowise configuration
     validateFlowiseConfig();
     
-    log.debug('Flowise API Config:', {
-      endpoint: FLOWISE_API_ENDPOINT,
-      hasApiKey: !!FLOWISE_API_KEY
-    });
-
     // If there are files, handle them according to Flowise docs
-    if (files && files.length > 0) {
+    if (files && files.length > 0 && client) {
       const file = files[0];
       
-      log.debug('Processing file:', {
-        name: file.name,
-        type: file.mimetype,
-        hasUrl: !!file.url_private
+      // Get full file info from Slack
+      const fileInfo = await client.files.info({
+        file: file.id
       });
 
+      if (!fileInfo.file.url_private) {
+        throw new Error('No private URL available for file download');
+      }
+
+      log.debug('File information:', {
+        name: fileInfo.file.name,
+        type: fileInfo.file.mimetype,
+        hasUrl: !!fileInfo.file.url_private,
+        size: fileInfo.file.size
+      });
+
+      // Download file with proper error handling
       const fileResponse = await axios({
         method: 'get',
-        url: file.url_private,
+        url: fileInfo.file.url_private,
         headers: {
           'Authorization': `Bearer ${process.env.SLACK_BOT_TOKEN}`
         },
@@ -330,8 +335,6 @@ const handleMessage = async (text, files = null) => {
 
       // Convert to base64 and send to Flowise
       const base64File = Buffer.from(fileResponse.data).toString('base64');
-      
-      log.debug('Sending request to Flowise with file');
       
       const response = await axios({
         method: 'post',
@@ -343,10 +346,10 @@ const handleMessage = async (text, files = null) => {
         data: {
           question: text || "Process this file",
           uploads: [{
-            data: `data:${file.mimetype};base64,${base64File}`,
+            data: `data:${fileInfo.file.mimetype};base64,${base64File}`,
             type: 'file',
-            name: file.name,
-            mime: file.mimetype
+            name: fileInfo.file.name,
+            mime: fileInfo.file.mimetype
           }]
         }
       });
@@ -355,8 +358,6 @@ const handleMessage = async (text, files = null) => {
     }
 
     // Regular text message without files
-    log.debug('Sending text-only request to Flowise');
-    
     const response = await axios({
       method: 'post',
       url: FLOWISE_API_ENDPOINT,
@@ -371,12 +372,7 @@ const handleMessage = async (text, files = null) => {
 
     return response.data;
   } catch (error) {
-    log.error('Error in handleMessage:', {
-      error: error.message,
-      code: error.code,
-      url: FLOWISE_API_ENDPOINT,
-      stack: error.stack
-    });
+    log.error('Error in handleMessage:', error);
     throw error;
   }
 };
@@ -430,8 +426,8 @@ app.message(async ({ message, say, client }) => {
 
     log.info(`Processing message in ${message.channel_type}`);
 
-    // Process the message
-    const response = await handleMessage(messageText, message.files);
+    // Pass the client to handleMessage
+    const response = await handleMessage(messageText, message.files, client);
     
     // Send the response
     await say({
