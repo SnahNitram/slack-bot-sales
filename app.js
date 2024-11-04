@@ -1,11 +1,12 @@
 // Required dependencies to be installed:
-// npm install @slack/bolt axios dotenv marked
+// npm install @slack/bolt axios dotenv marked form-data
 
 require('dotenv').config();
 const { App } = require('@slack/bolt');
 const axios = require('axios');
 const { marked } = require('marked');
 const { createServer } = require('http');
+const FormData = require('form-data');
 
 // Initialize the Slack app
 const app = new App({
@@ -325,11 +326,97 @@ app.event('message', async ({ event, say }) => {
 
     log.info('Successfully sent response');
 
+    if (event.files && event.files.length > 0) {
+      // Handle files attached to messages
+      const file = event.files[0];
+      const fileResponse = await axios({
+        method: 'get',
+        url: file.url_private,
+        headers: {
+          'Authorization': `Bearer ${process.env.SLACK_BOT_TOKEN}`
+        },
+        responseType: 'arraybuffer'
+      });
+
+      const formData = new FormData();
+      formData.append('file', new Blob([fileResponse.data]), file.name);
+      formData.append('question', messageText || 'Process this file');
+      
+      // Update your Flowise request to use formData
+      const flowiseResponse = await axios({
+        method: 'post',
+        url: FLOWISE_API_ENDPOINT,
+        data: formData,
+        headers: {
+          ...formData.getHeaders(),
+          'Authorization': `Bearer ${process.env.FLOWISE_API_KEY}`
+        }
+      });
+
+      // Send response back to Slack
+      await say({
+        channel: event.channel,
+        thread_ts: event.thread_ts || event.ts,
+        text: extractCleanResponse(flowiseResponse.data)
+      });
+    }
+
   } catch (error) {
     log.error('Error handling message:', error);
     await say({
       text: "I'm sorry, I encountered an error processing your request. Please try again later.",
       thread_ts: event.thread_ts || event.ts
+    });
+  }
+});
+
+// Handle file uploads
+app.event('file_shared', async ({ event, client }) => {
+  try {
+    // Get file information
+    const fileInfo = await client.files.info({
+      file: event.file_id
+    });
+
+    // Download the file
+    const fileResponse = await axios({
+      method: 'get',
+      url: fileInfo.file.url_private,
+      headers: {
+        'Authorization': `Bearer ${process.env.SLACK_BOT_TOKEN}`
+      },
+      responseType: 'arraybuffer'
+    });
+
+    // Create form data for Flowise
+    const formData = new FormData();
+    formData.append('file', new Blob([fileResponse.data]), fileInfo.file.name);
+    formData.append('question', 'Process this file');
+
+    // Send to Flowise
+    const flowiseResponse = await axios({
+      method: 'post',
+      url: FLOWISE_API_ENDPOINT,
+      data: formData,
+      headers: {
+        ...formData.getHeaders(),
+        'Authorization': `Bearer ${process.env.FLOWISE_API_KEY}`
+      }
+    });
+
+    // Send response back to Slack
+    await client.chat.postMessage({
+      channel: event.channel,
+      thread_ts: event.thread_ts || event.ts,
+      text: extractCleanResponse(flowiseResponse.data)
+    });
+
+  } catch (error) {
+    log.error('Error handling file:', error);
+    await client.chat.postMessage({
+      channel: event.channel,
+      thread_ts: event.thread_ts || event.ts,
+      text: "I'm sorry, I encountered an error processing your file. Please try again later."
     });
   }
 });
