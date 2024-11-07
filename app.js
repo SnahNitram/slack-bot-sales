@@ -2,7 +2,7 @@
 // npm install @slack/bolt axios dotenv marked form-data
 
 require('dotenv').config();
-const { App } = require('@slack/bolt');
+const { App, LogLevel } = require('@slack/bolt');
 const axios = require('axios');
 const { marked } = require('marked');
 const { createServer } = require('http');
@@ -12,24 +12,45 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 
-// Initialize the Slack app
+// Initialize the Slack app with retry configuration
 const app = new App({
   token: process.env.SLACK_BOT_TOKEN,
   signingSecret: process.env.SLACK_SIGNING_SECRET,
   socketMode: true,
-  appToken: process.env.SLACK_APP_TOKEN
+  appToken: process.env.SLACK_APP_TOKEN,
+  logLevel: LogLevel.WARN,
+  retryConfig: {
+    retries: 5,
+    factor: 1.5,
+    randomize: true,
+    minTimeout: 2000,
+    maxTimeout: 30000
+  },
+  rateLimitedFunctionConfig: {
+    maxAttempts: 3,
+    minTime: 2000
+  }
 });
 
-// Store bot user ID
+// Store bot user ID and connection state
 let botUserId = '';
+let isShuttingDown = false;
 
-// Initialize bot ID
-app.client.auth.test().then(response => {
+// Initialize bot ID with retry logic
+const initializeBotId = async () => {
+  try {
+    const response = await app.client.auth.test();
     botUserId = response.user_id;
     console.log(`[INFO] Bot user ID initialized: ${botUserId}`);
-}).catch(error => {
+  } catch (error) {
     console.error('[ERROR] Failed to get bot user ID:', error);
-});
+    if (!isShuttingDown) {
+      setTimeout(initializeBotId, 5000);
+    }
+  }
+};
+
+initializeBotId();
 
 // Create HTTP server for health checks
 const server = createServer((req, res) => {
@@ -50,12 +71,35 @@ const log = {
   }
 };
 
-// Simplified shutdown handler
+// Error handler with rate limit handling
+app.error(async (error) => {
+  if (isShuttingDown) return;
+
+  log.error('App error:', error);
+  
+  if (error.code === 'rate_limited') {
+    const retryAfter = Number(error.retryAfter) * 1000 || 30000;
+    log.info(`Rate limited. Waiting ${retryAfter / 1000} seconds before retry.`);
+    await new Promise(resolve => setTimeout(resolve, retryAfter));
+  }
+});
+
+// Enhanced shutdown handler
 process.on('SIGTERM', async () => {
-  log.info('Shutting down...');
-  await app.stop();
-  server.close();
-  process.exit(0);
+  if (isShuttingDown) return;
+  
+  isShuttingDown = true;
+  log.info('Shutting down gracefully...');
+  
+  try {
+    await app.stop();
+    server.close();
+    log.info('Cleanup completed');
+    process.exit(0);
+  } catch (error) {
+    log.error('Error during shutdown:', error);
+    process.exit(1);
+  }
 });
 
 // Configure Flowise API details
@@ -496,11 +540,6 @@ app.event('file_shared', async ({ event, client }) => {
       text: "I'm sorry, I encountered an error processing your file. Please try again later."
     });
   }
-});
-
-// Error handler
-app.error(async (error) => {
-  log.error('App error:', error);
 });
 
 // Start the app
